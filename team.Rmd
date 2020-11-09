@@ -1,0 +1,158 @@
+---
+title: "Lab 5"
+output: html_document
+---
+
+
+# Setup and Data Cleaning
+```{r}
+library(tidyverse)
+library(ggplot2)
+states <- map_data("state")
+counties <- map_data("county")
+
+acc <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/accident.csv", stringsAsFactors = FALSE)
+
+per <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/person.csv", stringsAsFactors = FALSE)
+
+state_codes <- read.csv("stateCodes.csv", stringsAsFactors = FALSE)
+make_codes <- read.csv("makeCodes.csv", stringsAsFactors = FALSE)
+
+county_codes <- readxl::read_xlsx("FRPP_GLC_-_United_StatesSep292020.xlsx")
+
+county_codes$`County Name` <- tolower(county_codes$`County Name`)
+
+t <- county_codes %>% 
+  select(`County Code`, `County Name`)
+
+counties <-  counties %>% 
+  left_join(t, by=c("subregion"="County Name"))
+
+counties$`County Code` <- as.numeric(counties$`County Code`)
+
+per <- per %>%
+  left_join(state_codes, by=c("STATE"="Codes")) %>%
+  select(-STATE) %>%
+  rename(STATE = State)
+
+acc <- acc %>%
+  left_join(state_codes, by=c("STATE"="Codes")) %>%
+  select(-STATE) %>%
+  rename(STATE = State)
+
+per <- per %>%
+  left_join(make_codes, by=c("MAKE"="Codes")) %>%
+  select(-MAKE) %>%
+  rename(MAKE = Make)
+
+acc$DAY_WEEK <- recode(acc$DAY_WEEK, `1`="Sunday", `2`="Monday", `3`="Tuesday", `4`="Wednesday", `5`="Thursday", `6`="Friday", `7`="Saturday") %>%
+  factor(levels=c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
+
+per$SEX <- recode(per$SEX, `1`="Male" , `2`="Female" , `8`="Not Reported") %>% factor(levels=c("Male", "Female", "Not Reported"))
+
+
+```
+
+## 1. Accident frequency by weekday
+```{r}
+ggplot(acc, aes(x=DAY_WEEK)) + geom_histogram(stat="count") + coord_flip() + xlab("Accident Freequency") + ylab("Weekday")
+```
+
+## 2. Fatallities
+```{r}
+fatal <- per %>% filter(INJ_SEV == 4)
+```
+
+## 3. Most Dangerous vehicles by state 
+```{r}
+danger<- fatal %>%
+  group_by(STATE, MAKE) %>%
+  na.omit() %>%
+  summarise(n = n()) %>%
+  group_by(STATE) %>%
+  filter(n == max(n))
+danger
+```
+
+Note: the most fatal category for make in many states is when the vehicle make is unkown. Since these vehicles could be any type it is likly they are all the same make so instead we will use the next largest category for these states.  
+
+## 4. Map with states labeled by most dangerous vehicle
+```{r}
+sever <- per %>% filter(INJ_SEV == 4 || INJ_SEV == 3)
+
+danger <- sever %>% 
+  group_by(STATE, MAKE) %>%
+  na.omit() %>%
+  summarise(n = n()) %>%
+  group_by(STATE) %>%
+  filter(n == max(n))
+
+danger$STATE <- tolower(danger$STATE)
+
+label <- danger %>% left_join(states, by=c("STATE"="region"))  %>%
+  group_by(STATE, MAKE) %>%
+  summarise(label_long = (max(long) + min(long))/2, label_lat = (max(lat) + min(lat))/2) %>%
+  ungroup()
+  
+danger %>%
+  left_join(states, by=c("STATE"="region") ) %>%
+  ggplot(aes(x = long, y = lat)) +
+  geom_path(aes(group=group)) + geom_text(data=label, aes(x=label_long, y=label_lat, label=MAKE)) + coord_map()
+  
+```
+
+I will use the make here rather than make and model to show the most dangerous vehicles based on make because I could not find a data table with the modle codes. The most dangerous vehicles here are the ones that cause the most sever and fatal injuries.
+
+## 5. Join accident and persons
+```{r}
+joined <- acc %>%
+  select(DAY_WEEK, WEATHER, WEATHER1,WEATHER2, STATE, ST_CASE) %>% 
+  left_join(per, by=c("ST_CASE"="ST_CASE", "STATE"="STATE"))
+```
+
+## 6. Number of accidents by day of the week, hour, and gender
+```{r}
+x <- joined %>%
+  filter(HOUR < 99) %>% #drop unknown time
+  group_by(DAY_WEEK, HOUR, SEX) %>%
+  summarise(n = n())
+
+ggplot(x, aes(x=HOUR, y=n, col=SEX)) + geom_line() + facet_wrap(~DAY_WEEK)
+```
+
+## 7. choropleth map of deaths on a county level
+```{r}
+x <- fatal %>%
+  group_by(COUNTY) %>%
+  summarise(n = n())
+plt <- counties %>%
+  right_join(x, by=c("County Code" = "COUNTY"))
+
+ggplot(plt, aes(x=long, y=lat, fill=n)) + geom_polygon(aes(group=group)) + coord_map()
+```
+
+
+
+## 8. which season is more dangerous?
+```{r}
+
+y <- fatal %>% 
+  select(MONTH, STATE) %>%
+  mutate(season = case_when(MONTH==12 | MONTH==1 | MONTH==2 ~ "Winter", MONTH==6 | MONTH==7 | MONTH==8 ~ "Summer", TRUE~"Other")) %>% 
+  filter(season=="Summer" | season=="Winter") %>%
+  group_by(STATE, season) %>%
+  summarise(n = n()) %>%
+  filter(n == max(n))
+
+y$STATE <- tolower(y$STATE)
+
+states %>%
+  left_join(y, by=c("region"="STATE") ) %>%
+  ggplot(aes(x = long, y = lat, fill=season)) +
+  geom_polygon(aes(group=group)) + coord_map()
+
+
+```
+
+In most states there are most fatalities durrign the summer. This is possibly because durring the summer there are more people traveling on the interstate and driving at high speeds than durring the winter. It is also possible that people are more cautiouse durring the winter and drive slower resulting in less fatal injuries durrring the winter. This is a suprising result as you would expect that with the worse driving conditions durring the winter there would be more fatal accidents, but that does not seem to be the case.
+
